@@ -39,6 +39,8 @@ We chose `Qwen/Qwen3-VL-4B-Instruct` because it is:
 
 ## Starter Code
 
+# Inference_capstone_project
+
 The [`starter_code`](./starter_code) folder contains:
 
 | File | Purpose |
