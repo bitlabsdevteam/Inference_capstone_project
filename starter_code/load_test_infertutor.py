@@ -5,9 +5,12 @@ from __future__ import annotations
 import argparse
 import asyncio
 import base64
+from collections import Counter
+from datetime import datetime, timezone
 import json
 import random
 import statistics
+import sys
 import time
 import zlib
 from dataclasses import dataclass, field
@@ -67,12 +70,16 @@ IMAGE_URL = make_png_data_url()
 @dataclass
 class Stats:
     total_requests: int = 0
+    total_successes: int = 0
     total_errors: int = 0
     total_chunks: int = 0
     ttft_ms: list[float] = field(default_factory=list)
     itl_ms: list[float] = field(default_factory=list)
     latency_ms: list[float] = field(default_factory=list)
     per_request_tps: list[float] = field(default_factory=list)
+    error_types: Counter[str] = field(default_factory=Counter)
+    error_statuses: Counter[str] = field(default_factory=Counter)
+    last_error: str = ""
     started_at: float = 0.0
     active_users: int = 0
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -80,16 +87,21 @@ class Stats:
     async def success(self, ttft: float, itl: float, latency: float, chunks: int):
         async with self.lock:
             self.total_requests += 1
+            self.total_successes += 1
             self.total_chunks += chunks
             self.ttft_ms.append(ttft)
             self.itl_ms.append(itl)
             self.latency_ms.append(latency)
             self.per_request_tps.append(chunks / (latency / 1000) if latency > 0 else 0)
 
-    async def error(self):
+    async def error(self, *, error_type: str, status_code: int | None = None, detail: str = ""):
         async with self.lock:
             self.total_requests += 1
             self.total_errors += 1
+            self.error_types[error_type] += 1
+            if status_code is not None:
+                self.error_statuses[str(status_code)] += 1
+            self.last_error = detail[:240] if detail else error_type
 
     @staticmethod
     def percentile(values: list[float], p: float) -> float:
@@ -105,6 +117,7 @@ class Stats:
         elapsed = self.elapsed()
         return {
             "total_requests": self.total_requests,
+            "total_successes": self.total_successes,
             "total_errors": self.total_errors,
             "error_rate": self.total_errors / max(self.total_requests, 1),
             "total_stream_chunks": self.total_chunks,
@@ -118,6 +131,10 @@ class Stats:
             "per_request_tps_mean": statistics.mean(self.per_request_tps) if self.per_request_tps else 0,
             "aggregate_stream_chunks_per_s": self.total_chunks / elapsed if elapsed else 0,
             "requests_per_s": self.total_requests / elapsed if elapsed else 0,
+            "successes_per_s": self.total_successes / elapsed if elapsed else 0,
+            "errors_by_type": dict(self.error_types),
+            "errors_by_status": dict(self.error_statuses),
+            "last_error": self.last_error,
         }
 
     def table(self) -> Table:
@@ -127,6 +144,7 @@ class Stats:
         table.add_column("Value", justify="right", style="green")
         table.add_row("Active users", str(self.active_users))
         table.add_row("Requests", str(r["total_requests"]))
+        table.add_row("Successes", str(r["total_successes"]))
         table.add_row("Errors", str(r["total_errors"]))
         table.add_row("TTFT p95", f'{r["ttft_p95_ms"]:.1f} ms')
         table.add_row("ITL p95", f'{r["itl_p95_ms"]:.1f} ms')
@@ -160,6 +178,22 @@ def choose_messages(mode: str) -> list[dict]:
     return choose_messages("text")
 
 
+def extract_content(delta: dict) -> str:
+    """Normalize OpenAI-style streamed content into a string for counting."""
+
+    content = delta.get("content", "")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = [
+            item.get("text", "")
+            for item in content
+            if isinstance(item, dict) and item.get("type") == "text"
+        ]
+        return "".join(parts)
+    return ""
+
+
 async def user_loop(user_id: int, args, stats: Stats, stop_event: asyncio.Event):
     async with httpx.AsyncClient(timeout=args.request_timeout) as client:
         while not stop_event.is_set():
@@ -175,6 +209,8 @@ async def user_loop(user_id: int, args, stats: Stats, stop_event: asyncio.Event)
             first_chunk_at = None
             chunk_times = []
             chunks = 0
+            request_error_type = ""
+            request_error_detail = ""
 
             try:
                 async with client.stream(
@@ -184,8 +220,12 @@ async def user_loop(user_id: int, args, stats: Stats, stop_event: asyncio.Event)
                     headers={"Content-Type": "application/json"},
                 ) as resp:
                     if resp.status_code != 200:
-                        await stats.error()
-                        await resp.aread()
+                        detail = (await resp.aread()).decode("utf-8", errors="replace")
+                        await stats.error(
+                            error_type="http_error",
+                            status_code=resp.status_code,
+                            detail=detail,
+                        )
                         continue
 
                     async for line in resp.aiter_lines():
@@ -195,9 +235,11 @@ async def user_loop(user_id: int, args, stats: Stats, stop_event: asyncio.Event)
                             line = line[6:]
                         try:
                             chunk = json.loads(line)
-                            content = chunk["choices"][0]["delta"].get("content", "")
-                        except Exception:
-                            continue
+                            content = extract_content(chunk["choices"][0]["delta"])
+                        except (KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
+                            request_error_type = "stream_parse_error"
+                            request_error_detail = str(exc)
+                            break
                         if content:
                             now = time.perf_counter()
                             first_chunk_at = first_chunk_at or now
@@ -205,8 +247,17 @@ async def user_loop(user_id: int, args, stats: Stats, stop_event: asyncio.Event)
                             chunks += 1
 
                 request_end = time.perf_counter()
+                if request_error_type:
+                    await stats.error(
+                        error_type=request_error_type,
+                        detail=request_error_detail,
+                    )
+                    continue
                 if first_chunk_at is None or chunks == 0:
-                    await stats.error()
+                    await stats.error(
+                        error_type="empty_stream",
+                        detail="The response completed without any content chunks.",
+                    )
                     continue
 
                 gaps = [b - a for a, b in zip(chunk_times, chunk_times[1:])]
@@ -214,8 +265,12 @@ async def user_loop(user_id: int, args, stats: Stats, stop_event: asyncio.Event)
                 itl = (sum(gaps) / len(gaps) * 1000) if gaps else 0.0
                 latency = (request_end - request_start) * 1000
                 await stats.success(ttft, itl, latency, chunks)
-            except Exception:
-                await stats.error()
+            except httpx.TimeoutException as exc:
+                await stats.error(error_type="timeout", detail=str(exc))
+            except httpx.HTTPError as exc:
+                await stats.error(error_type="http_client_error", detail=str(exc))
+            except Exception as exc:
+                await stats.error(error_type="unexpected_error", detail=str(exc))
 
             await asyncio.sleep(random.uniform(args.min_pause, args.max_pause))
 
@@ -248,16 +303,60 @@ async def run(args):
         task.cancel()
     await asyncio.gather(*tasks, return_exceptions=True)
 
+    workload_mix = {"text": 1.0} if args.mode == "text" else {
+        "long": 1.0 if args.mode == "long" else 0.0,
+        "image": 1.0 if args.mode == "image" else 0.0,
+        "text": 1.0 if args.mode == "text" else 0.0,
+    }
+    if args.mode == "mixed":
+        workload_mix = {"text": 0.55, "long": 0.20, "image": 0.25}
+
     result = {
+        "schema_version": 2,
+        "started_at_utc": datetime.fromtimestamp(stats.started_at, tz=timezone.utc).isoformat(),
+        "completed_at_utc": datetime.now(timezone.utc).isoformat(),
         "config": vars(args),
+        "provenance": {
+            "runner_command": args.runner_command,
+            "app_name": args.app_name,
+            "source_control": {
+                "commit": args.git_commit,
+                "branch": args.git_branch,
+                "is_dirty": args.git_dirty,
+            },
+            "environment": {
+                "python_executable": sys.executable,
+                "python_version": sys.version.split()[0],
+            },
+        },
+        "workload_mix": workload_mix,
         "results": stats.results(),
     }
     out_dir = ROOT / "results_infertutor"
     out_dir.mkdir(exist_ok=True)
     out_file = out_dir / f"{args.label}_{args.mode}_{args.users}u_{int(time.time())}.json"
-    out_file.write_text(json.dumps(result, indent=2))
+    out_file.write_text(json.dumps(result, indent=2), encoding="utf-8")
     console.print(stats.table())
     console.print(f"[green]Saved {out_file}[/green]")
+
+
+def validate_args(args) -> None:
+    if args.users <= 0:
+        raise ValueError("--users must be > 0.")
+    if args.duration <= 0:
+        raise ValueError("--duration must be > 0.")
+    if args.ramp_up < 0:
+        raise ValueError("--ramp-up must be >= 0.")
+    if args.max_tokens <= 0:
+        raise ValueError("--max-tokens must be > 0.")
+    if args.request_timeout <= 0:
+        raise ValueError("--request-timeout must be > 0.")
+    if args.total_gpus <= 0:
+        raise ValueError("--total-gpus must be > 0.")
+    if args.min_pause < 0 or args.max_pause < 0:
+        raise ValueError("--min-pause and --max-pause must be >= 0.")
+    if args.min_pause > args.max_pause:
+        raise ValueError("--min-pause cannot be greater than --max-pause.")
 
 
 def main():
@@ -274,10 +373,21 @@ def main():
     parser.add_argument("--max-pause", type=float, default=1.2)
     parser.add_argument("--label", default="manual")
     parser.add_argument("--total-gpus", type=int, default=1)
+    parser.add_argument("--seed", type=int, default=1234)
+    parser.add_argument("--runner-command", default="")
+    parser.add_argument("--app-name", default="")
+    parser.add_argument("--git-commit", default="")
+    parser.add_argument("--git-branch", default="")
+    parser.add_argument(
+        "--git-dirty",
+        type=lambda value: value.lower() == "true",
+        default=False,
+    )
     args = parser.parse_args()
+    validate_args(args)
+    random.seed(args.seed)
     asyncio.run(run(args))
 
 
 if __name__ == "__main__":
     main()
-

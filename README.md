@@ -47,6 +47,7 @@ The [`starter_code`](./starter_code) folder contains:
 | [`run_infertutor_experiment.py`](./starter_code/run_infertutor_experiment.py) | One-command deploy + benchmark runner |
 | [`load_test_infertutor.py`](./starter_code/load_test_infertutor.py) | Async streaming load tester |
 | [`score_infertutor.py`](./starter_code/score_infertutor.py) | Local leaderboard scorer |
+| [`generate_submission_artifacts.py`](./starter_code/generate_submission_artifacts.py) | Builds submission-ready artifacts from saved benchmark JSON files |
 | [`prompts.json`](./starter_code/prompts.json) | Fixed official prompt set |
 | [`requirements.txt`](./starter_code/requirements.txt) | Local Python dependencies |
 | [`README.md`](./starter_code/README.md) | Quick-start commands for the code |
@@ -257,6 +258,42 @@ Score them:
 
 ```bash
 python score_infertutor.py results_infertutor
+```
+
+Run a local preflight check:
+
+```bash
+python preflight_infertutor.py
+```
+
+Require Modal authentication for deploy readiness:
+
+```bash
+python preflight_infertutor.py --require-modal-auth
+```
+
+Bootstrap Modal auth and the Hugging Face secret from environment variables:
+
+```bash
+MODAL_TOKEN_ID=... MODAL_TOKEN_SECRET=... HF_TOKEN=... python bootstrap_infertutor_env.py
+```
+
+Run the repository validation suite:
+
+```bash
+bash scripts/validate_repo.sh
+```
+
+Require deploy readiness from the validation suite:
+
+```bash
+bash scripts/validate_repo.sh --require-modal-auth
+```
+
+Generate a submission bundle:
+
+```bash
+python generate_submission_artifacts.py results_infertutor
 ```
 
 ## Cleanup

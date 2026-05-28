@@ -16,6 +16,8 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import shlex
+import shutil
 import subprocess
 import sys
 import time
@@ -30,12 +32,107 @@ console = Console()
 ROOT = Path(__file__).parent
 TEMPLATE = ROOT / "modal_infertutor_app.py"
 GENERATED = ROOT / "modal_infertutor_app_generated.py"
+APP_NAME_PREFIX = "infertutor-"
+
+
+def sanitize_label(label: str) -> str:
+    """Convert a user-provided label into a Modal-safe app suffix."""
+
+    sanitized = re.sub(r"[^a-z0-9-]+", "-", label.lower()).strip("-")
+    if not sanitized:
+        raise ValueError("Label must contain at least one alphanumeric character.")
+    return sanitized[:48]
+
+
+def validate_args(args) -> None:
+    """Fail fast on invalid experiment settings before deployment."""
+
+    positive_int_fields = [
+        ("tp", args.tp),
+        ("replicas", args.replicas),
+        ("max_model_len", args.max_model_len),
+        ("max_batch_tokens", args.max_batch_tokens),
+        ("max_seqs", args.max_seqs),
+        ("concurrent_inputs", args.concurrent_inputs),
+        ("mm_max_pixels", args.mm_max_pixels),
+        ("users", args.users),
+        ("duration", args.duration),
+        ("max_tokens", args.max_tokens),
+        ("request_timeout", args.request_timeout),
+        ("health_timeout", args.health_timeout),
+    ]
+    if args.gpu_count is not None:
+        positive_int_fields.append(("gpu_count", args.gpu_count))
+    if args.ramp_up < 0:
+        raise ValueError("--ramp-up must be >= 0.")
+    if args.seed < 0:
+        raise ValueError("--seed must be >= 0.")
+    if args.min_pause < 0 or args.max_pause < 0:
+        raise ValueError("--min-pause and --max-pause must be >= 0.")
+    if args.min_pause > args.max_pause:
+        raise ValueError("--min-pause cannot be greater than --max-pause.")
+    for field_name, value in positive_int_fields:
+        if value <= 0:
+            raise ValueError(f"--{field_name.replace('_', '-')} must be > 0.")
+
+
+def replace_once(source: str, old: str, new: str) -> str:
+    """Replace an expected template line exactly once."""
+
+    count = source.count(old)
+    if count != 1:
+        raise RuntimeError(
+            f"Expected to replace template snippet exactly once, found {count}: {old}"
+        )
+    return source.replace(old, new, 1)
+
+
+def ensure_command_available(command_name: str) -> None:
+    """Fail with an actionable message when a required CLI is missing."""
+
+    if shutil.which(command_name):
+        return
+    raise SystemExit(
+        f"Required command not found: {command_name}. Install it before deploying, "
+        f"or pass --url to reuse an existing endpoint."
+    )
+
+
+def run_command_capture(cmd: list[str]) -> str:
+    """Run a small local command and return stripped stdout when it succeeds."""
+
+    proc = subprocess.run(
+        cmd,
+        cwd=ROOT.parent,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        return ""
+    return proc.stdout.strip()
+
+
+def collect_git_metadata() -> dict[str, str | bool]:
+    """Capture source-control metadata for experiment provenance."""
+
+    commit = run_command_capture(["git", "rev-parse", "HEAD"])
+    branch = run_command_capture(["git", "rev-parse", "--abbrev-ref", "HEAD"])
+    dirty = run_command_capture(["git", "status", "--short"])
+    metadata: dict[str, str | bool] = {}
+    if commit:
+        metadata["commit"] = commit
+    if branch:
+        metadata["branch"] = branch
+    if commit or branch:
+        metadata["is_dirty"] = bool(dirty)
+    return metadata
 
 
 def patch_modal_app(args) -> Path:
     """Create a per-experiment Modal app file with static config values."""
 
-    source = TEMPLATE.read_text()
+    source = TEMPLATE.read_text(encoding="utf-8")
     replacements = {
         'MODEL_NAME = os.environ.get("MODEL_NAME", "Qwen/Qwen3-VL-4B-Instruct")': f'MODEL_NAME = "{args.model}"',
         'TENSOR_PARALLEL = int(os.environ.get("TENSOR_PARALLEL", "1"))': f"TENSOR_PARALLEL = {args.tp}",
@@ -54,11 +151,15 @@ def patch_modal_app(args) -> Path:
         'MM_MAX_PIXELS = int(os.environ.get("MM_MAX_PIXELS", str(512 * 28 * 28)))': f"MM_MAX_PIXELS = {args.mm_max_pixels}",
     }
     for old, new in replacements.items():
-        source = source.replace(old, new)
+        source = replace_once(source, old, new)
 
-    app_name = f"infertutor-{args.label}".replace("_", "-")
-    source = source.replace('app = modal.App("infertutor-arena")', f'app = modal.App("{app_name}")')
-    GENERATED.write_text(source)
+    app_name = f"{APP_NAME_PREFIX}{sanitize_label(args.label)}"
+    source = replace_once(
+        source,
+        'app = modal.App("infertutor-arena")',
+        f'app = modal.App("{app_name}")',
+    )
+    GENERATED.write_text(source, encoding="utf-8")
     return GENERATED
 
 
@@ -108,6 +209,11 @@ def wait_for_health(url: str, timeout_s: int = 900):
 def run_load_test(url: str, args):
     """Run the fixed prompt workload against the deployed endpoint."""
 
+    runner_command = shlex.join(
+        [Path(sys.executable).name, Path(__file__).name, *sys.argv[1:]]
+    )
+    app_name = f"{APP_NAME_PREFIX}{sanitize_label(args.label)}"
+    git_metadata = collect_git_metadata()
     cmd = [
         sys.executable,
         str(ROOT / "load_test_infertutor.py"),
@@ -125,6 +231,24 @@ def run_load_test(url: str, args):
         str(args.ramp_up),
         "--max-tokens",
         str(args.max_tokens),
+        "--request-timeout",
+        str(args.request_timeout),
+        "--min-pause",
+        str(args.min_pause),
+        "--max-pause",
+        str(args.max_pause),
+        "--seed",
+        str(args.seed),
+        "--runner-command",
+        runner_command,
+        "--app-name",
+        app_name,
+        "--git-commit",
+        str(git_metadata.get("commit", "")),
+        "--git-branch",
+        str(git_metadata.get("branch", "")),
+        "--git-dirty",
+        "true" if git_metadata.get("is_dirty") else "false",
         "--label",
         args.label,
         "--total-gpus",
@@ -155,9 +279,15 @@ def main():
     parser.add_argument("--duration", type=int, default=60)
     parser.add_argument("--ramp-up", type=int, default=15)
     parser.add_argument("--max-tokens", type=int, default=96)
+    parser.add_argument("--request-timeout", type=int, default=180)
+    parser.add_argument("--min-pause", type=float, default=0.2)
+    parser.add_argument("--max-pause", type=float, default=1.2)
+    parser.add_argument("--seed", type=int, default=1234)
+    parser.add_argument("--health-timeout", type=int, default=900)
     parser.add_argument("--url", default=None, help="Reuse an existing endpoint instead of deploying")
     parser.add_argument("--deploy-only", action="store_true")
     args = parser.parse_args()
+    validate_args(args)
 
     total_gpus = (args.gpu_count or args.tp) * args.replicas
     console.print(Panel(json.dumps(vars(args) | {"total_gpus": total_gpus}, indent=2), title="InferTutor Experiment"))
@@ -165,12 +295,13 @@ def main():
     if total_gpus > 8:
         raise SystemExit("This starter runner caps experiments at 8 GPUs.")
 
+    if not args.url:
+        ensure_command_available("modal")
     url = args.url or deploy(patch_modal_app(args))
-    wait_for_health(url)
+    wait_for_health(url, timeout_s=args.health_timeout)
     if not args.deploy_only:
         run_load_test(url, args)
 
 
 if __name__ == "__main__":
     main()
-

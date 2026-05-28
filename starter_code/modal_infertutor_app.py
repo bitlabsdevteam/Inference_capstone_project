@@ -10,6 +10,7 @@ HTTP server on Modal.
 
 import os
 import subprocess
+import time
 
 import modal
 
@@ -51,25 +52,11 @@ MM_MAX_PIXELS = int(os.environ.get("MM_MAX_PIXELS", str(512 * 28 * 28)))
 
 MINUTES = 60
 VLLM_PORT = 8000
+VLLM_STARTUP_GRACE_SECONDS = 20
 
 
-@app.function(
-    image=vllm_image,
-    gpu=f"{GPU_TYPE}:{GPU_COUNT}",
-    scaledown_window=10 * MINUTES,
-    min_containers=MIN_CONTAINERS,
-    max_containers=MAX_CONTAINERS,
-    timeout=15 * MINUTES,
-    volumes={
-        "/root/.cache/huggingface": hf_cache,
-        "/root/.cache/vllm": vllm_cache,
-    },
-    secrets=[modal.Secret.from_name("huggingface", required_keys=["HF_TOKEN"])],
-)
-@modal.concurrent(max_inputs=CONCURRENT_INPUTS)
-@modal.web_server(port=VLLM_PORT, startup_timeout=15 * MINUTES)
-def serve():
-    """Start vLLM inside the Modal container."""
+def build_vllm_command() -> list[str]:
+    """Build the vLLM serve command from the configured constants."""
 
     cmd = [
         "vllm",
@@ -113,6 +100,42 @@ def serve():
     if ENABLE_CHUNKED_PREFILL:
         cmd += ["--enable-chunked-prefill"]
 
-    print("Starting vLLM:", " ".join(cmd), flush=True)
-    subprocess.Popen(cmd)
+    return cmd
 
+
+def launch_vllm_server(cmd: list[str], startup_grace_s: int = VLLM_STARTUP_GRACE_SECONDS):
+    """Start vLLM and fail fast if the process exits during initial startup."""
+
+    process = subprocess.Popen(cmd)
+    deadline = time.time() + startup_grace_s
+    while time.time() < deadline:
+        return_code = process.poll()
+        if return_code is not None:
+            raise RuntimeError(
+                f"vLLM exited during startup with return code {return_code}."
+            )
+        time.sleep(1)
+    return process
+
+
+@app.function(
+    image=vllm_image,
+    gpu=f"{GPU_TYPE}:{GPU_COUNT}",
+    scaledown_window=10 * MINUTES,
+    min_containers=MIN_CONTAINERS,
+    max_containers=MAX_CONTAINERS,
+    timeout=15 * MINUTES,
+    volumes={
+        "/root/.cache/huggingface": hf_cache,
+        "/root/.cache/vllm": vllm_cache,
+    },
+    secrets=[modal.Secret.from_name("huggingface", required_keys=["HF_TOKEN"])],
+)
+@modal.concurrent(max_inputs=CONCURRENT_INPUTS)
+@modal.web_server(port=VLLM_PORT, startup_timeout=15 * MINUTES)
+def serve():
+    """Start vLLM inside the Modal container."""
+
+    cmd = build_vllm_command()
+    print("Starting vLLM:", " ".join(cmd), flush=True)
+    launch_vllm_server(cmd)

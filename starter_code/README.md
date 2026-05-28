@@ -12,6 +12,8 @@ The goal is to remove infrastructure friction. You should spend your time on inf
 | `run_infertutor_experiment.py` | One-command deploy + load-test runner |
 | `load_test_infertutor.py` | Async streaming load tester for text, long, image, and mixed workloads |
 | `score_infertutor.py` | Summarizes result JSONs and computes a leaderboard score |
+| `generate_submission_artifacts.py` | Builds submission-ready artifacts from saved benchmark JSON files |
+| `result_schema.py` | Shared validation and scoring utilities for result JSON files |
 | `prompts.json` | Fixed official prompt set |
 | `requirements.txt` | Local Python dependencies |
 
@@ -76,10 +78,45 @@ Score results:
 python score_infertutor.py results_infertutor
 ```
 
+Run local preflight checks before deploying:
+
+```bash
+python preflight_infertutor.py
+```
+
+Require Modal authentication for deploy readiness:
+
+```bash
+python preflight_infertutor.py --require-modal-auth
+```
+
+Bootstrap Modal auth and the Hugging Face secret from environment variables:
+
+```bash
+MODAL_TOKEN_ID=... MODAL_TOKEN_SECRET=... HF_TOKEN=... python bootstrap_infertutor_env.py
+```
+
+Run the repository validation suite:
+
+```bash
+bash ../scripts/validate_repo.sh
+```
+
+Require deploy readiness from the validation suite:
+
+```bash
+bash ../scripts/validate_repo.sh --require-modal-auth
+```
+
+Generate a submission bundle from result JSON files:
+
+```bash
+python generate_submission_artifacts.py results_infertutor
+```
+
 Stop Modal apps when done:
 
 ```bash
 modal app list
 modal app stop <APP_ID_OR_NAME>
 ```
-
