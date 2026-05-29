@@ -103,6 +103,7 @@ run_infertutor_experiment.py
   - vLLM cache
 - Requires Modal secret:
   - `huggingface` with `HF_TOKEN`
+  - `infertutor-auth` with `ENDPOINT_API_KEY`
 
 The constants in this file are the patch targets used by the experiment runner:
 
@@ -135,6 +136,7 @@ Responsibilities:
 - Patches `modal_infertutor_app.py` into `modal_infertutor_app_generated.py`.
 - Deploys the generated app with `modal deploy`.
 - Waits for `/health`.
+- Verifies a real authenticated `/v1/chat/completions` smoke request before load.
 - Invokes `load_test_infertutor.py` with provenance metadata.
 
 Important design point:
@@ -155,6 +157,7 @@ Capabilities:
   - `mixed`
 - Uses the shared InferTutor system prompt from `prompts.json`.
 - Generates a deterministic inline PNG data URL for image traffic.
+- Sends bearer-authenticated requests when `ENDPOINT_API_KEY` is configured.
 - Sends streaming requests to `/v1/chat/completions`.
 - Measures:
   - TTFT
@@ -180,6 +183,15 @@ Where:
 - `goodput = aggregate_stream_chunks_per_s * (1 - error_rate)`
 
 `starter_code/score_infertutor.py` renders those results as a leaderboard table.
+It now also surfaces whether the pre-load functional smoke check was recorded
+for each run.
+
+Important limitation:
+
+- This local score is based on streamed content chunks per second, not exact
+  token throughput.
+- The README's `quality_pass_rate` term is part of the final external
+  evaluation story, not something the starter harness currently measures.
 
 ### 5. Submission Artifact Generator
 
@@ -192,8 +204,12 @@ JSON files and writes:
 - `final_command.sh`
 - `submission_manifest.json`
 
-The generated report is intentionally a draft. It still expects a human to replace
-the remaining `TODO` commentary with real engineering observations.
+The generator supports two modes:
+
+- Submission-ready mode requires five or more real experiment JSON files, final
+  provenance, and finalized structured commentary.
+- Draft mode is available through `--allow-draft` and still emits placeholder
+  commentary for local preview workflows.
 
 ## Request Lifecycle
 
@@ -211,6 +227,13 @@ One benchmark request follows this path:
    - request completion
 7. Aggregated statistics are persisted to a JSON result file.
 
+The persisted result can also include:
+
+- `smoke_check.ok`
+- `smoke_check.status_code`
+- `smoke_check.latency_ms`
+- `smoke_check.response_excerpt`
+
 ## Configuration and Secrets
 
 Recommended `.env` shape:
@@ -219,6 +242,7 @@ Recommended `.env` shape:
 MODAL_TOKEN_ID=...
 MODAL_TOKEN_SECRET=...
 HF_TOKEN=...
+ENDPOINT_API_KEY=...
 MODEL_NAME=Qwen/Qwen3-VL-4B-Instruct
 ```
 
@@ -226,6 +250,9 @@ Notes:
 
 - `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET` come from Modal, not Hugging Face.
 - `HF_TOKEN` is used to create the Modal secret named `huggingface`.
+- `ENDPOINT_API_KEY` is used locally and in the Modal secret named
+  `infertutor-auth` so the benchmark client can authenticate to the deployed
+  vLLM server.
 - `MODEL_NAME` should remain `Qwen/Qwen3-VL-4B-Instruct` for normal submissions.
 
 To load `.env` into the current shell:
@@ -271,6 +298,8 @@ Expected:
 - `Validation complete.`
 - Optional `modal_auth` warning is acceptable for local-only validation if you
   have not loaded Modal auth into the shell.
+- Optional `endpoint_api_key` warning is acceptable for local-only validation if
+  you have not loaded `ENDPOINT_API_KEY` into the shell.
 
 ### Step 3. Run unit tests directly
 
@@ -527,17 +556,11 @@ Replace `<final-file>.json` with your chosen real benchmark output.
   --output-dir starter_code/submission_bundle
 ```
 
-### Step 8. Edit the generated report
+### Step 8. Provide final commentary
 
-Open:
-
-- `starter_code/submission_bundle/engineering_report.md`
-
-Replace every remaining `TODO` with real findings:
-
-- Which optimization helped most
-- Which optimization failed or surprised you
-- What you would try next
+Create a JSON file for the final run commentary and pass it with
+`--commentary-file` when generating the bundle. Use `--allow-draft` only for
+local previews.
 
 ### Step 9. Verify submission contents
 
@@ -575,4 +598,5 @@ They do not replace live Modal smoke testing.
 - Local validation cannot prove live GPU deployment quality.
 - Final submission artifacts should be generated only from real benchmark JSON
   files, not synthetic placeholders.
-- `engineering_report.md` is not complete until all `TODO` entries are replaced.
+- `engineering_report.md` is not complete until the final bundle is generated
+  without `--allow-draft` and includes finalized commentary.

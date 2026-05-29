@@ -51,7 +51,7 @@ def main():
     rows.sort(reverse=True, key=lambda x: x[0])
 
     table = Table(title="InferTutor Leaderboard")
-    for col in ["file", "mode", "users", "gpus", "err%", "TTFT p95", "ITL p95", "throughput", "req/s", "score"]:
+    for col in ["file", "mode", "users", "gpus", "smoke", "err%", "TTFT p95", "ITL p95", "throughput", "req/s", "score"]:
         table.add_column(col, justify="right" if col != "file" else "left")
 
     for value, file, data in rows:
@@ -61,6 +61,7 @@ def main():
             str(row["mode"]),
             str(int(row["users"])),
             str(int(row["gpus"])),
+            "ok" if row["smoke_ok"] else "n/a",
             f'{100 * row["error_rate"]:.1f}',
             f'{row["ttft_p95_ms"]:.0f} ms',
             f'{row["itl_p95_ms"]:.1f} ms',

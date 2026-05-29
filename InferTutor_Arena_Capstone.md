@@ -69,7 +69,7 @@ Score =
   / (p95_TTFT_seconds * p95_ITL_seconds * total_GPU_count)
 ```
 
-For the starter harness, throughput is reported as streamed content chunks per second. In the final leaderboard, the evaluator may tokenize outputs with the Qwen tokenizer to compute exact output tokens per second. Your relative tuning strategy should be the same either way.
+For the starter harness, throughput is reported as streamed content chunks per second as a local proxy metric. In the final leaderboard, the evaluator may tokenize outputs with the Qwen tokenizer and include hidden quality checks such as `quality_pass_rate` to compute the official score. Your relative tuning strategy should be the same either way, but do not treat the starter score as the final official leaderboard value.
 
 The score rewards:
 
@@ -297,4 +297,3 @@ The capstone package includes:
   - `README.md`
 
 The goal is that infrastructure should not be the hard part. Your time should go into inference engineering: reading metrics, forming hypotheses, changing serving parameters, and explaining why the results moved.
-

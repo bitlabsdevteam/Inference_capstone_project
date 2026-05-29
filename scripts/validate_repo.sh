@@ -44,6 +44,12 @@ echo "==> Bytecode check"
 echo "==> Unit tests"
 "$PYTHON_BIN" -m unittest tests.test_infertutor_tools
 
+echo "==> Repo hygiene"
+"$PYTHON_BIN" scripts/check_repo_hygiene.py
+
+echo "==> Dependency check"
+"$PYTHON_BIN" -m pip check
+
 if [[ "$SKIP_PREFLIGHT" -eq 0 ]]; then
   echo "==> Preflight"
   PREFLIGHT_ARGS=(--json)

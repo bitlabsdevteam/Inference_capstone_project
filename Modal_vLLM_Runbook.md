@@ -11,6 +11,7 @@ Modal is a serverless compute platform for running Python functions on CPUs and 
 - On-demand H100 GPU containers.
 - Persistent volumes for Hugging Face and vLLM caches.
 - Secrets for storing Hugging Face tokens.
+- Secrets for storing the endpoint bearer token used by the benchmark client.
 - A public HTTPS endpoint for the vLLM server.
 - Replica scaling through `min_containers` and `max_containers`.
 - Per-second billing, which is useful for short experiments.
@@ -53,7 +54,8 @@ The assignment uses vLLM as a production-style serving engine. You are not calli
 Use Python 3.11 or newer.
 
 ```bash
-pip install -r requirements.txt
+python3 -m venv .venv
+./.venv/bin/python -m pip install -r starter_code/requirements.txt
 ```
 
 ### 2. Authenticate Modal
@@ -90,7 +92,22 @@ The starter app expects the secret name to be:
 huggingface
 ```
 
-### 4. Run a smoke test
+### 4. Create endpoint auth secret
+
+The authenticated vLLM server also requires a bearer token shared with the local benchmark client:
+
+```bash
+modal secret create infertutor-auth ENDPOINT_API_KEY=<YOUR_ENDPOINT_API_KEY>
+export ENDPOINT_API_KEY=<YOUR_ENDPOINT_API_KEY>
+```
+
+The starter app expects the auth secret name to be:
+
+```text
+infertutor-auth
+```
+
+### 5. Run a smoke test
 
 Start small:
 
@@ -106,7 +123,7 @@ python run_infertutor_experiment.py \
   --max-tokens 64
 ```
 
-If this passes with zero errors, your infrastructure is working.
+If this passes with zero errors, your infrastructure is working. The runner now validates both `/health` and a real authenticated `/v1/chat/completions` request before load starts.
 
 ## Main Commands
 
@@ -331,4 +348,3 @@ Good submissions do not just show a high number. They explain the path:
 - Why did you keep or reject that configuration?
 
 The goal is not magic. The goal is disciplined measurement.
-

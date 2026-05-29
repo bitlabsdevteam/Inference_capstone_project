@@ -69,7 +69,7 @@ Score =
   / (p95_TTFT_seconds * p95_ITL_seconds * total_GPU_count)
 ```
 
-The starter harness reports streamed content chunks per second. The final evaluator may tokenize outputs to compute exact tokens per second, but the optimization logic is the same.
+The starter harness reports streamed content chunks per second as a local proxy metric. The final evaluator may tokenize outputs and include hidden quality checks such as `quality_pass_rate`, so the local starter score should be treated as a tuning aid rather than the final official score.
 
 You are rewarded for:
 
@@ -148,10 +148,11 @@ git clone https://github.com/VizuaraAI/infertutor-arena-capstone.git
 cd infertutor-arena-capstone/starter_code
 ```
 
-Install dependencies:
+Install dependencies into a project virtual environment:
 
 ```bash
-pip install -r requirements.txt
+python3 -m venv .venv
+./.venv/bin/python -m pip install -r starter_code/requirements.txt
 ```
 
 Authenticate Modal:
@@ -164,6 +165,13 @@ Create the Hugging Face secret expected by the Modal app:
 
 ```bash
 modal secret create huggingface HF_TOKEN=<YOUR_HF_TOKEN>
+```
+
+Create the endpoint auth secret expected by the authenticated vLLM server:
+
+```bash
+modal secret create infertutor-auth ENDPOINT_API_KEY=<YOUR_ENDPOINT_API_KEY>
+export ENDPOINT_API_KEY=<YOUR_ENDPOINT_API_KEY>
 ```
 
 Run a tiny smoke test:
@@ -181,6 +189,18 @@ python run_infertutor_experiment.py \
 ```
 
 If the smoke test passes with zero errors, the infrastructure is working.
+
+The runner now performs two checks before load begins:
+
+- `/health` must report ready.
+- `/v1/chat/completions` must answer a minimal authenticated non-streaming tutor request.
+
+If deploy succeeds but the run still fails, triage in this order:
+
+1. Run `python preflight_infertutor.py --require-modal-auth --require-endpoint-auth`.
+2. Confirm `ENDPOINT_API_KEY` is exported locally and the Modal secret `infertutor-auth` exists.
+3. Re-run the smoke experiment before increasing users.
+4. Check the latest result JSON for `smoke_check`, `last_error`, and `errors_by_type`.
 
 ## Example Runs
 
@@ -274,10 +294,16 @@ Require Modal authentication for deploy readiness:
 python preflight_infertutor.py --require-modal-auth
 ```
 
-Bootstrap Modal auth and the Hugging Face secret from environment variables:
+Require local endpoint auth configuration too:
 
 ```bash
-MODAL_TOKEN_ID=... MODAL_TOKEN_SECRET=... HF_TOKEN=... python bootstrap_infertutor_env.py
+python preflight_infertutor.py --require-modal-auth --require-endpoint-auth
+```
+
+Bootstrap Modal auth plus the Hugging Face and endpoint auth secrets from environment variables:
+
+```bash
+MODAL_TOKEN_ID=... MODAL_TOKEN_SECRET=... HF_TOKEN=... ENDPOINT_API_KEY=... python bootstrap_infertutor_env.py
 ```
 
 Run the repository validation suite:
@@ -295,7 +321,34 @@ bash scripts/validate_repo.sh --require-modal-auth
 Generate a submission bundle:
 
 ```bash
-python generate_submission_artifacts.py results_infertutor
+python generate_submission_artifacts.py results_infertutor \
+  --final-file <FINAL_RESULT_JSON> \
+  --commentary-file <COMMENTARY_JSON>
+```
+
+Draft-only local preview bundles are still possible:
+
+```bash
+python generate_submission_artifacts.py results_infertutor --allow-draft
+```
+
+Submission-ready bundles now enforce:
+
+- At least five real result JSON files.
+- A selected final result file with runner command, app name, and source-control provenance.
+- Finalized commentary for:
+  - best optimization
+  - surprising failure or tradeoff
+  - next step
+
+The commentary file must be a JSON object with this shape:
+
+```json
+{
+  "best_optimization": "Enabled prefix caching because the system prompt is shared across requests.",
+  "surprising_failure_or_tradeoff": "Increasing batch tokens improved throughput but worsened TTFT at lower concurrency.",
+  "next_step": "Repeat the best text configuration in mixed mode and sweep replica count."
+}
 ```
 
 ## Cleanup

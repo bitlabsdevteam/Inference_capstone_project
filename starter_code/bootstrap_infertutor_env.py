@@ -66,13 +66,41 @@ def ensure_hf_secret(hf_token: str | None, secret_name: str, skip_secret: bool) 
     raise RuntimeError(detail or "Failed to create Hugging Face secret.")
 
 
+def ensure_endpoint_auth_secret(
+    endpoint_api_key: str | None, secret_name: str, skip_secret: bool
+) -> bool:
+    """Create the endpoint auth secret when a token is available."""
+
+    if skip_secret:
+        return True
+
+    if not endpoint_api_key:
+        print("ENDPOINT_API_KEY not provided. Skipping endpoint auth secret creation.")
+        return False
+
+    proc = run_modal_command(
+        ["secret", "create", secret_name, f"ENDPOINT_API_KEY={endpoint_api_key}"]
+    )
+    if proc.returncode == 0:
+        return True
+
+    detail = proc.stderr.strip() or proc.stdout.strip()
+    if "already exists" in detail.lower():
+        print(f"Secret '{secret_name}' already exists.")
+        return True
+    raise RuntimeError(detail or "Failed to create endpoint auth secret.")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Bootstrap Modal auth and secrets for InferTutor.")
     parser.add_argument("--token-id", default=os.environ.get("MODAL_TOKEN_ID", ""))
     parser.add_argument("--token-secret", default=os.environ.get("MODAL_TOKEN_SECRET", ""))
     parser.add_argument("--hf-token", default=os.environ.get("HF_TOKEN", ""))
+    parser.add_argument("--endpoint-api-key", default=os.environ.get("ENDPOINT_API_KEY", ""))
     parser.add_argument("--secret-name", default="huggingface")
+    parser.add_argument("--auth-secret-name", default="infertutor-auth")
     parser.add_argument("--skip-secret", action="store_true")
+    parser.add_argument("--skip-auth-secret", action="store_true")
     parser.add_argument("--check-only", action="store_true")
     args = parser.parse_args()
 
@@ -85,6 +113,11 @@ def main() -> None:
         raise SystemExit(1)
 
     ensure_hf_secret(args.hf_token or None, args.secret_name, args.skip_secret)
+    ensure_endpoint_auth_secret(
+        args.endpoint_api_key or None,
+        args.auth_secret_name,
+        args.skip_auth_secret,
+    )
     print("Bootstrap complete.")
 
 

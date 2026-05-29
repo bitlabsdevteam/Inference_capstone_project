@@ -8,6 +8,7 @@ import base64
 from collections import Counter
 from datetime import datetime, timezone
 import json
+import os
 import random
 import statistics
 import sys
@@ -25,6 +26,61 @@ from rich.table import Table
 console = Console()
 ROOT = Path(__file__).parent
 PROMPTS = json.loads((ROOT / "prompts.json").read_text())
+
+
+def build_request_headers() -> dict[str, str]:
+    headers = {"Content-Type": "application/json"}
+    api_key = os.environ.get("ENDPOINT_API_KEY", "").strip()
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    return headers
+
+
+def redact_endpoint_url(url: str) -> str:
+    if not url:
+        return ""
+    if ".modal.run" in url:
+        return "https://***.modal.run"
+    return "<redacted>"
+
+
+def build_result_payload(args, stats: Stats, workload_mix: dict[str, float]) -> dict:
+    payload = {
+        "schema_version": 2,
+        "started_at_utc": datetime.fromtimestamp(
+            stats.started_at, tz=timezone.utc
+        ).isoformat(),
+        "completed_at_utc": datetime.now(timezone.utc).isoformat(),
+        "config": {
+            key: value
+            for key, value in vars(args).items()
+            if key not in {"api_key", "url"}
+        }
+        | {"endpoint_url_redacted": redact_endpoint_url(args.url)},
+        "provenance": {
+            "runner_command": args.runner_command,
+            "app_name": args.app_name,
+            "source_control": {
+                "commit": args.git_commit,
+                "branch": args.git_branch,
+                "is_dirty": args.git_dirty,
+            },
+            "environment": {
+                "python_executable": sys.executable,
+                "python_version": sys.version.split()[0],
+            },
+        },
+        "workload_mix": workload_mix,
+        "results": stats.results(),
+    }
+    if getattr(args, "smoke_ok", False) or getattr(args, "smoke_status_code", 0):
+        payload["smoke_check"] = {
+            "ok": bool(args.smoke_ok),
+            "status_code": int(args.smoke_status_code),
+            "latency_ms": float(args.smoke_latency_ms),
+            "response_excerpt": str(args.smoke_response_excerpt or "")[:120],
+        }
+    return payload
 
 
 def make_png_data_url(width: int = 256, height: int = 192) -> str:
@@ -217,7 +273,7 @@ async def user_loop(user_id: int, args, stats: Stats, stop_event: asyncio.Event)
                     "POST",
                     f"{args.url.rstrip('/')}/v1/chat/completions",
                     json=payload,
-                    headers={"Content-Type": "application/json"},
+                    headers=build_request_headers(),
                 ) as resp:
                     if resp.status_code != 200:
                         detail = (await resp.aread()).decode("utf-8", errors="replace")
@@ -311,27 +367,7 @@ async def run(args):
     if args.mode == "mixed":
         workload_mix = {"text": 0.55, "long": 0.20, "image": 0.25}
 
-    result = {
-        "schema_version": 2,
-        "started_at_utc": datetime.fromtimestamp(stats.started_at, tz=timezone.utc).isoformat(),
-        "completed_at_utc": datetime.now(timezone.utc).isoformat(),
-        "config": vars(args),
-        "provenance": {
-            "runner_command": args.runner_command,
-            "app_name": args.app_name,
-            "source_control": {
-                "commit": args.git_commit,
-                "branch": args.git_branch,
-                "is_dirty": args.git_dirty,
-            },
-            "environment": {
-                "python_executable": sys.executable,
-                "python_version": sys.version.split()[0],
-            },
-        },
-        "workload_mix": workload_mix,
-        "results": stats.results(),
-    }
+    result = build_result_payload(args, stats, workload_mix)
     out_dir = ROOT / "results_infertutor"
     out_dir.mkdir(exist_ok=True)
     out_file = out_dir / f"{args.label}_{args.mode}_{args.users}u_{int(time.time())}.json"
@@ -383,6 +419,14 @@ def main():
         type=lambda value: value.lower() == "true",
         default=False,
     )
+    parser.add_argument(
+        "--smoke-ok",
+        type=lambda value: value.lower() == "true",
+        default=False,
+    )
+    parser.add_argument("--smoke-status-code", type=int, default=0)
+    parser.add_argument("--smoke-latency-ms", type=float, default=0.0)
+    parser.add_argument("--smoke-response-excerpt", default="")
     args = parser.parse_args()
     validate_args(args)
     random.seed(args.seed)

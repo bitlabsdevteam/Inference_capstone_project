@@ -20,9 +20,12 @@ The goal is to remove infrastructure friction. You should spend your time on inf
 ## Quick Start
 
 ```bash
-pip install -r requirements.txt
+python3 -m venv .venv
+./.venv/bin/python -m pip install -r requirements.txt
 modal token new
 modal secret create huggingface HF_TOKEN=<YOUR_HF_TOKEN>
+modal secret create infertutor-auth ENDPOINT_API_KEY=<YOUR_ENDPOINT_API_KEY>
+export ENDPOINT_API_KEY=<YOUR_ENDPOINT_API_KEY>
 ```
 
 Smoke test:
@@ -81,19 +84,25 @@ python score_infertutor.py results_infertutor
 Run local preflight checks before deploying:
 
 ```bash
-python preflight_infertutor.py
+./.venv/bin/python preflight_infertutor.py
 ```
 
 Require Modal authentication for deploy readiness:
 
 ```bash
-python preflight_infertutor.py --require-modal-auth
+./.venv/bin/python preflight_infertutor.py --require-modal-auth
 ```
 
-Bootstrap Modal auth and the Hugging Face secret from environment variables:
+Require local endpoint auth configuration too:
 
 ```bash
-MODAL_TOKEN_ID=... MODAL_TOKEN_SECRET=... HF_TOKEN=... python bootstrap_infertutor_env.py
+./.venv/bin/python preflight_infertutor.py --require-modal-auth --require-endpoint-auth
+```
+
+Bootstrap Modal auth plus the Hugging Face and endpoint auth secrets from environment variables:
+
+```bash
+MODAL_TOKEN_ID=... MODAL_TOKEN_SECRET=... HF_TOKEN=... ENDPOINT_API_KEY=... python bootstrap_infertutor_env.py
 ```
 
 Run the repository validation suite:
@@ -111,8 +120,12 @@ bash ../scripts/validate_repo.sh --require-modal-auth
 Generate a submission bundle from result JSON files:
 
 ```bash
-python generate_submission_artifacts.py results_infertutor
+python generate_submission_artifacts.py results_infertutor \
+  --final-file <FINAL_RESULT_JSON> \
+  --commentary-file <COMMENTARY_JSON>
 ```
+
+Use `--allow-draft` only for incomplete local previews. A submission-ready bundle requires at least five experiments plus finalized commentary and final-run provenance.
 
 Stop Modal apps when done:
 

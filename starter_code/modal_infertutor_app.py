@@ -9,6 +9,7 @@ HTTP server on Modal.
 """
 
 import os
+import json
 import subprocess
 import time
 
@@ -55,8 +56,43 @@ VLLM_PORT = 8000
 VLLM_STARTUP_GRACE_SECONDS = 20
 
 
+def redact_command(cmd: list[str]) -> list[str]:
+    """Redact sensitive values before logging command metadata."""
+
+    redacted: list[str] = []
+    skip_next = False
+    for part in cmd:
+        if skip_next:
+            redacted.append("***")
+            skip_next = False
+            continue
+        redacted.append(part)
+        if part == "--api-key":
+            skip_next = True
+    return redacted
+
+
+def emit_runtime_event(event: str, **fields) -> None:
+    """Print one machine-readable runtime event line."""
+
+    payload = {
+        "event": event,
+        "component": "infertutor_modal_app",
+        "ts_unix": round(time.time(), 3),
+    }
+    payload.update(fields)
+    print(json.dumps(payload, sort_keys=True), flush=True)
+
+
 def build_vllm_command() -> list[str]:
     """Build the vLLM serve command from the configured constants."""
+
+    endpoint_api_key = os.environ.get("ENDPOINT_API_KEY", "").strip()
+    if not endpoint_api_key:
+        raise RuntimeError(
+            "ENDPOINT_API_KEY is required. Create the 'infertutor-auth' Modal "
+            "secret and expose ENDPOINT_API_KEY before deploying."
+        )
 
     cmd = [
         "vllm",
@@ -85,6 +121,8 @@ def build_vllm_command() -> list[str]:
         '{"image": 1, "video": 0}',
         "--mm-processor-kwargs",
         f'{{"min_pixels": 784, "max_pixels": {MM_MAX_PIXELS}, "fps": 1}}',
+        "--api-key",
+        endpoint_api_key,
     ]
 
     # Eager mode starts faster. Compiled mode can improve text-only throughput
@@ -106,15 +144,22 @@ def build_vllm_command() -> list[str]:
 def launch_vllm_server(cmd: list[str], startup_grace_s: int = VLLM_STARTUP_GRACE_SECONDS):
     """Start vLLM and fail fast if the process exits during initial startup."""
 
+    emit_runtime_event(
+        "vllm_starting",
+        startup_grace_s=startup_grace_s,
+        command=redact_command(cmd),
+    )
     process = subprocess.Popen(cmd)
     deadline = time.time() + startup_grace_s
     while time.time() < deadline:
         return_code = process.poll()
         if return_code is not None:
+            emit_runtime_event("vllm_startup_failed", return_code=return_code)
             raise RuntimeError(
                 f"vLLM exited during startup with return code {return_code}."
             )
         time.sleep(1)
+    emit_runtime_event("vllm_startup_ready", pid=process.pid)
     return process
 
 
@@ -129,7 +174,10 @@ def launch_vllm_server(cmd: list[str], startup_grace_s: int = VLLM_STARTUP_GRACE
         "/root/.cache/huggingface": hf_cache,
         "/root/.cache/vllm": vllm_cache,
     },
-    secrets=[modal.Secret.from_name("huggingface", required_keys=["HF_TOKEN"])],
+    secrets=[
+        modal.Secret.from_name("huggingface", required_keys=["HF_TOKEN"]),
+        modal.Secret.from_name("infertutor-auth", required_keys=["ENDPOINT_API_KEY"]),
+    ],
 )
 @modal.concurrent(max_inputs=CONCURRENT_INPUTS)
 @modal.web_server(port=VLLM_PORT, startup_timeout=15 * MINUTES)
@@ -137,5 +185,13 @@ def serve():
     """Start vLLM inside the Modal container."""
 
     cmd = build_vllm_command()
-    print("Starting vLLM:", " ".join(cmd), flush=True)
+    emit_runtime_event(
+        "serve_invoked",
+        model=MODEL_NAME,
+        tensor_parallel=TENSOR_PARALLEL,
+        gpu_type=GPU_TYPE,
+        gpu_count=GPU_COUNT,
+        max_num_seqs=MAX_NUM_SEQS,
+        max_num_batched_tokens=MAX_NUM_BATCHED_TOKENS,
+    )
     launch_vllm_server(cmd)

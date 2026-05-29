@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import shlex
 import shutil
@@ -33,6 +34,16 @@ ROOT = Path(__file__).parent
 TEMPLATE = ROOT / "modal_infertutor_app.py"
 GENERATED = ROOT / "modal_infertutor_app_generated.py"
 APP_NAME_PREFIX = "infertutor-"
+
+
+def build_auth_headers() -> dict[str, str]:
+    """Build request headers for authenticated endpoint access."""
+
+    headers = {"Content-Type": "application/json"}
+    api_key = os.environ.get("ENDPOINT_API_KEY", "").strip()
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    return headers
 
 
 def sanitize_label(label: str) -> str:
@@ -206,7 +217,59 @@ def wait_for_health(url: str, timeout_s: int = 900):
     raise TimeoutError(f"Endpoint did not become healthy: {last_error}")
 
 
-def run_load_test(url: str, args):
+def smoke_test_endpoint(url: str, model: str, timeout_s: int = 30) -> None:
+    """Verify the endpoint can answer a minimal inference request before load."""
+
+    console.print("[bold]Running functional smoke check[/bold]")
+    payload = {
+        "model": model,
+        "messages": [
+            {
+                "role": "system",
+                "content": "You are InferTutor, a concise inference engineering tutor.",
+            },
+            {"role": "user", "content": "Reply with the single word READY."},
+        ],
+        "max_tokens": 16,
+        "temperature": 0.0,
+        "stream": False,
+    }
+    started = time.perf_counter()
+    response = httpx.post(
+        f"{url.rstrip('/')}/v1/chat/completions",
+        json=payload,
+        headers=build_auth_headers(),
+        timeout=timeout_s,
+    )
+    latency_ms = (time.perf_counter() - started) * 1000
+    if response.status_code != 200:
+        raise RuntimeError(
+            "Functional smoke check failed with "
+            f"HTTP {response.status_code}: {response.text[:240]}"
+        )
+
+    try:
+        data = response.json()
+        content = data["choices"][0]["message"]["content"].strip()
+    except (KeyError, IndexError, TypeError, ValueError, AttributeError) as exc:
+        raise RuntimeError(
+            f"Functional smoke check returned an unexpected payload: {exc}"
+        ) from exc
+
+    if not content:
+        raise RuntimeError(
+            "Functional smoke check succeeded but returned an empty completion."
+        )
+    console.print(f"[green]Functional smoke check passed[/green] {content}")
+    return {
+        "ok": True,
+        "status_code": response.status_code,
+        "latency_ms": latency_ms,
+        "response_excerpt": content[:120],
+    }
+
+
+def run_load_test(url: str, args, smoke_result: dict | None = None):
     """Run the fixed prompt workload against the deployed endpoint."""
 
     runner_command = shlex.join(
@@ -253,6 +316,14 @@ def run_load_test(url: str, args):
         args.label,
         "--total-gpus",
         str((args.gpu_count or args.tp) * args.replicas),
+        "--smoke-ok",
+        "true" if smoke_result and smoke_result.get("ok") else "false",
+        "--smoke-status-code",
+        str(smoke_result.get("status_code", 0) if smoke_result else 0),
+        "--smoke-latency-ms",
+        str(smoke_result.get("latency_ms", 0.0) if smoke_result else 0.0),
+        "--smoke-response-excerpt",
+        str(smoke_result.get("response_excerpt", "") if smoke_result else ""),
     ]
     subprocess.run(cmd, cwd=ROOT, check=True)
 
@@ -300,7 +371,8 @@ def main():
     url = args.url or deploy(patch_modal_app(args))
     wait_for_health(url, timeout_s=args.health_timeout)
     if not args.deploy_only:
-        run_load_test(url, args)
+        smoke_result = smoke_test_endpoint(url, args.model)
+        run_load_test(url, args, smoke_result)
 
 
 if __name__ == "__main__":

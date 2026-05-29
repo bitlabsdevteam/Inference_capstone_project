@@ -6,6 +6,13 @@ import json
 from pathlib import Path
 
 
+SUBMISSION_COMMENTARY_FIELDS = (
+    "best_optimization",
+    "surprising_failure_or_tradeoff",
+    "next_step",
+)
+
+
 def _require_mapping(value, field_name: str) -> dict:
     if not isinstance(value, dict):
         raise ValueError(f"'{field_name}' must be a JSON object.")
@@ -16,6 +23,12 @@ def _require_number(value, field_name: str) -> float:
     if not isinstance(value, (int, float)) or isinstance(value, bool):
         raise ValueError(f"'{field_name}' must be a number.")
     return float(value)
+
+
+def _require_non_empty_string(value, field_name: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"'{field_name}' must be a non-empty string.")
+    return value.strip()
 
 
 def validate_result_data(data: dict) -> dict:
@@ -55,11 +68,52 @@ def validate_result_data(data: dict) -> dict:
 
     provenance = data.get("provenance")
     if provenance is not None:
-        _require_mapping(provenance, "provenance")
+        provenance = _require_mapping(provenance, "provenance")
+        source_control = provenance.get("source_control")
+        if source_control is not None:
+            source_control = _require_mapping(
+                source_control, "provenance.source_control"
+            )
+            if "is_dirty" in source_control and not isinstance(
+                source_control["is_dirty"], bool
+            ):
+                raise ValueError(
+                    "'provenance.source_control.is_dirty' must be a boolean."
+                )
 
     workload_mix = data.get("workload_mix")
     if workload_mix is not None:
         _require_mapping(workload_mix, "workload_mix")
+
+    smoke_check = data.get("smoke_check")
+    if smoke_check is not None:
+        smoke_check = _require_mapping(smoke_check, "smoke_check")
+        if not isinstance(smoke_check.get("ok"), bool):
+            raise ValueError("'smoke_check.ok' must be a boolean.")
+        if "status_code" in smoke_check:
+            _require_number(smoke_check["status_code"], "smoke_check.status_code")
+        if "latency_ms" in smoke_check:
+            _require_number(smoke_check["latency_ms"], "smoke_check.latency_ms")
+        if "response_excerpt" in smoke_check and not isinstance(
+            smoke_check["response_excerpt"], str
+        ):
+            raise ValueError("'smoke_check.response_excerpt' must be a string.")
+
+    submission_commentary = data.get("submission_commentary")
+    if submission_commentary is not None:
+        submission_commentary = _require_mapping(
+            submission_commentary, "submission_commentary"
+        )
+        for field_name in SUBMISSION_COMMENTARY_FIELDS:
+            if field_name not in submission_commentary:
+                raise ValueError(
+                    f"'submission_commentary.{field_name}' is required when "
+                    "'submission_commentary' is present."
+                )
+            _require_non_empty_string(
+                submission_commentary[field_name],
+                f"submission_commentary.{field_name}",
+            )
 
     return data
 
@@ -100,4 +154,28 @@ def result_row(data: dict) -> dict[str, float | str]:
         "throughput": float(results.get("aggregate_stream_chunks_per_s", 0.0)),
         "requests_per_s": float(results.get("requests_per_s", 0.0)),
         "score": score_result(data),
+        "smoke_ok": data.get("smoke_check", {}).get("ok", False),
+        "last_error": str(results.get("last_error", "")),
     }
+
+
+def require_submission_provenance(data: dict) -> dict:
+    """Require the provenance fields needed for a final submission bundle."""
+
+    provenance = _require_mapping(data.get("provenance"), "provenance")
+    _require_non_empty_string(
+        provenance.get("runner_command", ""), "provenance.runner_command"
+    )
+    _require_non_empty_string(provenance.get("app_name", ""), "provenance.app_name")
+    source_control = _require_mapping(
+        provenance.get("source_control"), "provenance.source_control"
+    )
+    _require_non_empty_string(
+        source_control.get("commit", ""), "provenance.source_control.commit"
+    )
+    _require_non_empty_string(
+        source_control.get("branch", ""), "provenance.source_control.branch"
+    )
+    if not isinstance(source_control.get("is_dirty"), bool):
+        raise ValueError("'provenance.source_control.is_dirty' must be a boolean.")
+    return provenance

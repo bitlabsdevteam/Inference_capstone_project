@@ -1,0 +1,67 @@
+{
+  "schema_version": 2,
+  "started_at_utc": "2026-05-28T05:12:08.146907+00:00",
+  "completed_at_utc": "2026-05-28T05:12:38.177962+00:00",
+  "config": {
+    "url": "https://bitlabs27--infertutor-smoke-serve.modal.run",
+    "model": "Qwen/Qwen3-VL-4B-Instruct",
+    "mode": "text",
+    "users": 5,
+    "duration": 30,
+    "ramp_up": 5,
+    "max_tokens": 64,
+    "request_timeout": 180,
+    "min_pause": 0.2,
+    "max_pause": 1.2,
+    "label": "smoke",
+    "total_gpus": 1,
+    "seed": 1234,
+    "runner_command": "python run_infertutor_experiment.py --label smoke --gpu-type H100 --replicas 1 --mode text --users 5 --duration 30 --ramp-up 5 --max-tokens 64",
+    "app_name": "infertutor-smoke",
+    "git_commit": "71fe9f064d0a6b6c350d2ebc794a0878558269a9",
+    "git_branch": "main",
+    "git_dirty": true
+  },
+  "provenance": {
+    "runner_command": "python run_infertutor_experiment.py --label smoke --gpu-type H100 --replicas 1 --mode text --users 5 --duration 30 --ramp-up 5 --max-tokens 64",
+    "app_name": "infertutor-smoke",
+    "source_control": {
+      "commit": "71fe9f064d0a6b6c350d2ebc794a0878558269a9",
+      "branch": "main",
+      "is_dirty": true
+    },
+    "environment": {
+      "python_executable": "/Users/davidbong/Documents/inference_capstone_projects/infertutor-arena-capstone/.venv/bin/python",
+      "python_version": "3.14.2"
+    }
+  },
+  "workload_mix": {
+    "text": 1.0
+  },
+  "results": {
+    "total_requests": 56,
+    "total_successes": 56,
+    "total_errors": 0,
+    "error_rate": 0.0,
+    "total_stream_chunks": 3578,
+    "ttft_p50_ms": 333.80445797229186,
+    "ttft_p95_ms": 674.8165419558063,
+    "ttft_p99_ms": 2223.5098329838365,
+    "itl_p50_ms": 20.528777777808646,
+    "itl_p95_ms": 23.23820701585935,
+    "latency_p50_ms": 1642.271457996685,
+    "latency_p95_ms": 2035.899915965274,
+    "per_request_tps_mean": 37.68446197772892,
+    "aggregate_stream_chunks_per_s": 119.14326546021805,
+    "requests_per_s": 1.8647352894835691,
+    "successes_per_s": 1.8647352894835691,
+    "errors_by_type": {},
+    "errors_by_status": {},
+    "last_error": ""
+  },
+  "submission_commentary": {
+    "best_optimization": "TODO",
+    "surprising_failure_or_tradeoff": "TODO",
+    "next_step": "TODO"
+  }
+}

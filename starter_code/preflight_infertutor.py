@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -13,6 +14,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).parent
+REQUIREMENTS_PATH = ROOT / "requirements.txt"
 REQUIRED_FILES = [
     ROOT / "modal_infertutor_app.py",
     ROOT / "run_infertutor_experiment.py",
@@ -75,7 +77,13 @@ def check_required_modules() -> list[CheckResult]:
     results = []
     for module_name in REQUIRED_MODULES:
         ok = importlib.util.find_spec(module_name) is not None
-        detail = "importable" if ok else "not importable"
+        if ok:
+            detail = "importable"
+        else:
+            detail = (
+                "not importable; install pinned dependencies from "
+                f"{REQUIREMENTS_PATH}"
+            )
         results.append(CheckResult(name=f"module:{module_name}", ok=ok, detail=detail))
     return results
 
@@ -99,7 +107,10 @@ def check_modal_auth(*, required: bool = False) -> CheckResult:
         return CheckResult(
             name="modal_auth",
             ok=False,
-            detail="modal CLI not found",
+            detail=(
+                "modal CLI not found. Install the Modal CLI in the active "
+                "environment and rerun preflight."
+            ),
             required=required,
         )
     proc = subprocess.run(
@@ -153,13 +164,36 @@ def check_prompts_schema() -> CheckResult:
     return CheckResult(name="prompts_schema", ok=True, detail="ok")
 
 
-def run_preflight(*, require_modal_auth: bool = False) -> list[CheckResult]:
+def check_endpoint_api_key(*, required: bool = False) -> CheckResult:
+    api_key = os.environ.get("ENDPOINT_API_KEY", "").strip()
+    if api_key:
+        return CheckResult(
+            name="endpoint_api_key",
+            ok=True,
+            detail="configured via ENDPOINT_API_KEY",
+            required=required,
+        )
+    return CheckResult(
+        name="endpoint_api_key",
+        ok=False,
+        detail=(
+            "ENDPOINT_API_KEY not set. Export ENDPOINT_API_KEY locally and create "
+            "the 'infertutor-auth' Modal secret before running authenticated benchmarks."
+        ),
+        required=required,
+    )
+
+
+def run_preflight(
+    *, require_modal_auth: bool = False, require_endpoint_auth: bool = False
+) -> list[CheckResult]:
     results = [check_python_version(), check_prompts_schema()]
     results.extend(check_required_files())
     results.extend(check_required_modules())
     results.append(check_command("git", required=False))
     results.append(check_command("modal", required=False))
     results.append(check_modal_auth(required=require_modal_auth))
+    results.append(check_endpoint_api_key(required=require_endpoint_auth))
     return results
 
 
@@ -195,9 +229,17 @@ def main() -> None:
         action="store_true",
         help="Fail the preflight if Modal CLI authentication is missing",
     )
+    parser.add_argument(
+        "--require-endpoint-auth",
+        action="store_true",
+        help="Fail the preflight if ENDPOINT_API_KEY is missing locally.",
+    )
     args = parser.parse_args()
 
-    results = run_preflight(require_modal_auth=args.require_modal_auth)
+    results = run_preflight(
+        require_modal_auth=args.require_modal_auth,
+        require_endpoint_auth=args.require_endpoint_auth,
+    )
     summary = summarize(results)
     if args.json:
         print(json.dumps(summary, indent=2))
